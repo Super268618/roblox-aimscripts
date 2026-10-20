@@ -8,32 +8,26 @@ local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
 --------------------------------------------------------------------------------
--- CONFIGURATION & SETTINGS STATE
+-- CONFIGURATION & SETTINGS STATE (DISTANCE-SCALED SNAPPY AIM)
 --------------------------------------------------------------------------------
 local SETTINGS = {
 	TOGGLE_KEY = Enum.KeyCode.F,
 	SWITCH_LEFT_KEY = Enum.KeyCode.Q,
 	SWITCH_RIGHT_KEY = Enum.KeyCode.E,
 	
-	BASE_MAX_RADIUS = 200,
-	SNIPER_MAX_RADIUS = 500,
+	BASE_MAX_RADIUS = 250,
+	SNIPER_MAX_RADIUS = 350,
 	
-	WEIGHT_SCREEN_CENTER = 0.6,
-	WEIGHT_WORLD_DISTANCE = 0.4,
+	WEIGHT_SCREEN_CENTER = 0.5,
+	WEIGHT_WORLD_DISTANCE = 0.5,
 	
-	BASE_CAMERA_OFFSET = Vector3.new(2.2, 1.8, 7.5),
+	-- Distance-scaled snap response rates
+	MIN_SNAP_SPEED = 15,
+	MAX_SNAP_SPEED = 60,
+	CLOSE_DISTANCE = 15,
+	FAR_DISTANCE = 120,
 	
-	SMOOTHING_FACTOR = 0.25,
-	PREDICTION_MULT = 0.09,
-	RAY_THICKNESS = 0.6,
-	
-	BODYGYRO_P = 60000,
-	BODYGYRO_D = 600,
-	WALL_COLLISION_RADIUS = 0.4,
-	
-	TargetPartSelection = "Head", 
-	SmoothingSpeed = 0.25,
-	PredictionScale = 0.09,
+	PREDICTION_SCALE = 0.015,
 }
 
 --------------------------------------------------------------------------------
@@ -42,15 +36,13 @@ local SETTINGS = {
 local isLocked = false
 local currentTarget = nil
 local hudContainer = nil
-local bodyGyro = nil
 
 local lastTargetPosition = nil
 local velocityEstimate = Vector3.zero
-local smoothedTargetCFrame = nil
-local currentCameraOffset = SETTINGS.BASE_CAMERA_OFFSET
+local isPredictionActive = true
 
 --------------------------------------------------------------------------------
--- UI SYSTEM & SETTINGS MENU SETUP
+-- UI SYSTEM & STREAMLINED SETTINGS MENU
 --------------------------------------------------------------------------------
 local playerGui = player:WaitForChild("PlayerGui")
 local existingGui = playerGui:FindFirstChild("CameraLockGui")
@@ -98,7 +90,7 @@ settingsCorner.Parent = settingsBtn
 -- Settings Menu Frame
 local settingsMenu = Instance.new("Frame")
 settingsMenu.Name = "SettingsMenu"
-settingsMenu.Size = UDim2.new(0, 260, 0, 280)
+settingsMenu.Size = UDim2.new(0, 220, 0, 135)
 settingsMenu.AnchorPoint = Vector2.new(1, 0)
 settingsMenu.Position = UDim2.new(1, -20, 0, 65)
 settingsMenu.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
@@ -110,40 +102,18 @@ menuCorner.CornerRadius = UDim.new(0, 8)
 menuCorner.Parent = settingsMenu
 
 local menuTitle = Instance.new("TextLabel")
-menuTitle.Size = UDim2.new(1, 0, 0, 40)
+menuTitle.Size = UDim2.new(1, 0, 0, 35)
 menuTitle.BackgroundTransparency = 1
 menuTitle.Text = "LOCK SETTINGS"
 menuTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
 menuTitle.Font = Enum.Font.SourceSansBold
-menuTitle.TextSize = 16
+menuTitle.TextSize = 15
 menuTitle.Parent = settingsMenu
-
-local function createDropdownButton(name, yPos, selectionValue)
-	local btn = Instance.new("TextButton")
-	btn.Size = UDim2.new(0.9, 0, 0, 35)
-	btn.Position = UDim2.new(0.05, 0, 0, yPos)
-	btn.BackgroundColor3 = SETTINGS.TargetPartSelection == selectionValue and Color3.fromRGB(70, 130, 180) or Color3.fromRGB(40, 40, 40)
-	btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-	btn.Text = name
-	btn.Font = Enum.Font.SourceSans
-	btn.TextSize = 14
-	btn.Parent = settingsMenu
-	
-	local c = Instance.new("UICorner")
-	c.CornerRadius = UDim.new(0, 6)
-	c.Parent = btn
-	return btn
-end
-
-local btnHead = createDropdownButton("Target: Head", 45, "Head")
-local btnTorso = createDropdownButton("Target: UpperTorso", 85, "UpperTorso")
-local btnLegs = createDropdownButton("Target: Legs", 125, "Legs")
-local btnAuto = createDropdownButton("Target: Auto (Dynamic)", 165, "Auto")
 
 -- Auto Feature Toggle Button
 local autoFeatureBtn = Instance.new("TextButton")
 autoFeatureBtn.Size = UDim2.new(0.9, 0, 0, 35)
-autoFeatureBtn.Position = UDim2.new(0.05, 0, 0, 215)
+autoFeatureBtn.Position = UDim2.new(0.05, 0, 0, 40)
 autoFeatureBtn.BackgroundColor3 = Color3.fromRGB(50, 180, 80)
 autoFeatureBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 autoFeatureBtn.Text = "Auto Feature: ON"
@@ -157,23 +127,31 @@ autoCorner.Parent = autoFeatureBtn
 
 local isAutoFeatureActive = true
 
-local function updateSelectionVisuals(selected)
-	SETTINGS.TargetPartSelection = selected
-	btnHead.BackgroundColor3 = (selected == "Head") and Color3.fromRGB(70, 130, 180) or Color3.fromRGB(40, 40, 40)
-	btnTorso.BackgroundColor3 = (selected == "UpperTorso") and Color3.fromRGB(70, 130, 180) or Color3.fromRGB(40, 40, 40)
-	btnLegs.BackgroundColor3 = (selected == "Legs") and Color3.fromRGB(70, 130, 180) or Color3.fromRGB(40, 40, 40)
-	btnAuto.BackgroundColor3 = (selected == "Auto") and Color3.fromRGB(70, 130, 180) or Color3.fromRGB(40, 40, 40)
-end
-
-btnHead.Activated:Connect(function() updateSelectionVisuals("Head") end)
-btnTorso.Activated:Connect(function() updateSelectionVisuals("UpperTorso") end)
-btnLegs.Activated:Connect(function() updateSelectionVisuals("Legs") end)
-btnAuto.Activated:Connect(function() updateSelectionVisuals("Auto") end)
-
 autoFeatureBtn.Activated:Connect(function()
 	isAutoFeatureActive = not isAutoFeatureActive
 	autoFeatureBtn.Text = isAutoFeatureActive and "Auto Feature: ON" or "Auto Feature: OFF"
 	autoFeatureBtn.BackgroundColor3 = isAutoFeatureActive and Color3.fromRGB(50, 180, 80) or Color3.fromRGB(180, 50, 50)
+end)
+
+-- Velocity Prediction Toggle Button
+local predictionBtn = Instance.new("TextButton")
+predictionBtn.Size = UDim2.new(0.9, 0, 0, 35)
+predictionBtn.Position = UDim2.new(0.05, 0, 0, 85)
+predictionBtn.BackgroundColor3 = Color3.fromRGB(50, 180, 80)
+predictionBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+predictionBtn.Text = "Prediction: ON"
+predictionBtn.Font = Enum.Font.SourceSansBold
+predictionBtn.TextSize = 14
+predictionBtn.Parent = settingsMenu
+
+local predictionCorner = Instance.new("UICorner")
+predictionCorner.CornerRadius = UDim.new(0, 6)
+predictionCorner.Parent = predictionBtn
+
+predictionBtn.Activated:Connect(function()
+	isPredictionActive = not isPredictionActive
+	predictionBtn.Text = isPredictionActive and "Prediction: ON" or "Prediction: OFF"
+	predictionBtn.BackgroundColor3 = isPredictionActive and Color3.fromRGB(50, 180, 80) or Color3.fromRGB(180, 50, 50)
 end)
 
 settingsBtn.Activated:Connect(function()
@@ -195,16 +173,15 @@ local lastCacheUpdate = 0
 
 RunService.Heartbeat:Connect(function()
 	local now = tick()
-	if now - lastCacheUpdate > 0.5 then
+	if now - lastCacheUpdate > 0.4 then
 		lastCacheUpdate = now
 		table.clear(cachedModels)
 		for _, obj in ipairs(workspace:GetChildren()) do
 			if obj:IsA("Model") and obj ~= player.Character then
 				local hum = obj:FindFirstChildOfClass("Humanoid")
 				if hum and hum.Health > 0 then
-					local head = obj:FindFirstChild("Head")
 					local torso = obj:FindFirstChild("UpperTorso") or obj:FindFirstChild("Torso") or obj:FindFirstChild("HumanoidRootPart")
-					if head or torso then
+					if torso then
 						table.insert(cachedModels, {Model = obj, Humanoid = hum})
 					end
 				end
@@ -223,7 +200,7 @@ local function getMaxRadius()
 	for _, item in ipairs(char:GetChildren()) do
 		if item:IsA("Tool") then
 			local name = item.Name:lower()
-			if name:find("sniper") or name:find("awp") or name:find("rifle") or name:find("scope") or name:find("barrett") then
+			if name:find("gun") or name:find("revolver") or name:find("sheriff") then
 				return SETTINGS.SNIPER_MAX_RADIUS
 			end
 		end
@@ -233,42 +210,21 @@ local function getMaxRadius()
 end
 
 --------------------------------------------------------------------------------
--- FULLY AUTOMATED & ROBUST MULTI-PART SELECTION DISCOVERY
+-- TORSO-ONLY TARGET PART DISCOVERY
 --------------------------------------------------------------------------------
 local function getTargetPart(model)
 	if not model then return nil end
 
-	if isAutoFeatureActive and SETTINGS.TargetPartSelection == "Auto" then
-		local head = model:FindFirstChild("Head")
-		if head and head:IsA("BasePart") then return head end
-		local torso = model:FindFirstChild("UpperTorso") or model:FindFirstChild("Torso")
-		if torso and torso:IsA("BasePart") then return torso end
+	local torso = model:FindFirstChild("UpperTorso") or model:FindFirstChild("Torso") or model:FindFirstChild("HumanoidRootPart")
+	if torso and torso:IsA("BasePart") then
+		return torso
 	end
 
-	if SETTINGS.TargetPartSelection == "Head" then
-		local head = model:FindFirstChild("Head")
-		if head and head:IsA("BasePart") then return head end
-	end
-
-	if SETTINGS.TargetPartSelection == "UpperTorso" then
-		local torso = model:FindFirstChild("UpperTorso") or model:FindFirstChild("Torso") or model:FindFirstChild("HumanoidRootPart")
-		if torso and torso:IsA("BasePart") then return torso end
-	end
-
-	if SETTINGS.TargetPartSelection == "Legs" then
-		for _, partName in ipairs({"RightLeg", "LeftLeg", "RightLowerLeg", "LeftLowerLeg", "RightUpperLeg", "LeftUpperLeg"}) do
-			local legPart = model:FindFirstChild(partName)
-			if legPart and legPart:IsA("BasePart") then
-				return legPart
-			end
-		end
-	end
-
-	return model:FindFirstChild("Head") or model:FindFirstChild("UpperTorso") or model:FindFirstChild("Torso") or model:FindFirstChild("HumanoidRootPart")
+	return model:FindFirstChild("HumanoidRootPart")
 end
 
 --------------------------------------------------------------------------------
--- VELOCITY & PREDICTION MATH
+-- TOGGLEABLE VELOCITY PREDICTION & PRECISE MATH
 --------------------------------------------------------------------------------
 local function calculateDynamicTargetPosition(targetPart, dt)
 	if not targetPart then return nil end
@@ -277,21 +233,18 @@ local function calculateDynamicTargetPosition(targetPart, dt)
 
 	if lastTargetPosition then
 		local rawVel = (currentPos - lastTargetPosition) / math.max(dt, 0.001)
-		velocityEstimate = velocityEstimate:Lerp(rawVel, 0.3)
+		velocityEstimate = velocityEstimate:Lerp(rawVel, 0.25)
 	else
 		velocityEstimate = Vector3.zero
 	end
 	lastTargetPosition = currentPos
 
-	local predictedPos = currentPos + (velocityEstimate * SETTINGS.PredictionScale)
-
-	if not smoothedTargetCFrame then
-		smoothedTargetCFrame = CFrame.new(predictedPos)
-	else
-		smoothedTargetCFrame = smoothedTargetCFrame:Lerp(CFrame.new(predictedPos), SETTINGS.SmoothingSpeed)
+	local predictedPos = currentPos
+	if isPredictionActive then
+		predictedPos = currentPos + (velocityEstimate * SETTINGS.PREDICTION_SCALE)
 	end
 
-	return smoothedTargetCFrame.Position
+	return predictedPos
 end
 
 --------------------------------------------------------------------------------
@@ -349,37 +302,6 @@ local function getBestTarget()
 end
 
 --------------------------------------------------------------------------------
--- PHYSICS BODYGYRO SETUP
---------------------------------------------------------------------------------
-local function setupBodyGyro(character)
-	local root = character:WaitForChild("HumanoidRootPart", 5)
-	if not root then return end
-
-	local oldGyro = root:FindFirstChild("CameraLockBodyGyro")
-	if oldGyro then oldGyro:Destroy() end
-
-	bodyGyro = Instance.new("BodyGyro")
-	bodyGyro.Name = "CameraLockBodyGyro"
-	bodyGyro.P = SETTINGS.BODYGYRO_P
-	bodyGyro.D = SETTINGS.BODYGYRO_D
-	bodyGyro.MaxTorque = Vector3.new(0, 0, 0)
-	bodyGyro.CFrame = root.CFrame
-	bodyGyro.Parent = root
-end
-
-local function setPhysicsEnabled(enable)
-	local char = player.Character
-	if not char then return end
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	
-	if hum then hum.AutoRotate = not enable end
-
-	if bodyGyro then
-		bodyGyro.MaxTorque = enable and Vector3.new(0, math.huge, 0) or Vector3.zero
-	end
-end
-
---------------------------------------------------------------------------------
 -- HUD SETUP
 --------------------------------------------------------------------------------
 local function createHUD(targetPart)
@@ -411,9 +333,9 @@ local function createHUD(targetPart)
 end
 
 --------------------------------------------------------------------------------
--- PROCEDURAL 3D DYNAMIC CAMERA OFFSET ENGINE LOOP
+-- DISTANCE-SCALED SNAPPY AIM ENGINE (ROBLOX NATIVE CAMERA BINDING)
 --------------------------------------------------------------------------------
-local function updateCamera(dt)
+local function updateDistanceScaledAim(dt)
 	local character = player.Character
 	if not isLocked or not currentTarget or not currentTarget.Parent or not character then
 		unlockCamera()
@@ -422,7 +344,6 @@ local function updateCamera(dt)
 
 	local playerRoot = character:FindFirstChild("HumanoidRootPart")
 	local playerHum = character:FindFirstChildOfClass("Humanoid")
-
 	if not playerRoot or not playerHum or (playerHum.Health and playerHum.Health <= 0) then
 		unlockCamera()
 		return
@@ -430,36 +351,15 @@ local function updateCamera(dt)
 
 	local aimTargetPos = calculateDynamicTargetPosition(currentTarget, dt)
 
-	if bodyGyro then
-		bodyGyro.CFrame = CFrame.lookAt(playerRoot.Position, Vector3.new(aimTargetPos.X, playerRoot.Position.Y, aimTargetPos.Z))
-	end
+	-- Dynamically scale snap speed based on distance (snappy when close, smooth when far)
+	local distance = (currentTarget.Position - playerRoot.Position).Magnitude
+	local alpha = math.clamp((distance - SETTINGS.CLOSE_DISTANCE) / (SETTINGS.FAR_DISTANCE - SETTINGS.CLOSE_DISTANCE), 0, 1)
+	local currentSnapSpeed = SETTINGS.MAX_SNAP_SPEED + (SETTINGS.MIN_SNAP_SPEED - SETTINGS.MAX_SNAP_SPEED) * alpha
 
-	local deltaToTarget = aimTargetPos - playerRoot.Position
-	local flatDist = Vector3.new(deltaToTarget.X, 0, deltaToTarget.Z).Magnitude
-	local heightDiff = deltaToTarget.Y
-
-	local targetForwardDepth = math.clamp(flatDist * 0.25, 4.0, 14.0)
-	local targetVerticalHeight = math.clamp(1.6 + (heightDiff * 0.05), 0.8, 4.0)
-	local targetSideWidth = math.clamp(2.2 - (flatDist * 0.002), 1.2, 2.8)
-
-	local proceduralCameraOffset = Vector3.new(targetSideWidth, targetVerticalHeight, targetForwardDepth)
+	local currentCamCFrame = camera.CFrame
+	local targetLookCFrame = CFrame.lookAt(currentCamCFrame.Position, aimTargetPos)
 	
-	currentCameraOffset = currentCameraOffset:Lerp(proceduralCameraOffset, math.clamp(dt * 8, 0.05, 0.3))
-
-	local shoulderCFrame = playerRoot.CFrame * CFrame.new(currentCameraOffset)
-	local idealCamPos = shoulderCFrame.Position
-	local playerCenterPos = playerRoot.Position + Vector3.new(0, 1.5, 0)
-
-	local camRayParams = RaycastParams.new()
-	camRayParams.FilterType = Enum.RaycastFilterType.Exclude
-	camRayParams.FilterDescendantsInstances = {character, currentTarget.Parent}
-
-	local camHit = workspace:Spherecast(playerCenterPos, SETTINGS.RAY_THICKNESS, idealCamPos - playerCenterPos, camRayParams)
-	local finalCamPos = camHit and (camHit.Position + (camHit.Normal * SETTINGS.WALL_COLLISION_RADIUS)) or idealCamPos
-
-	camera.CameraType = Enum.CameraType.Scriptable
-	UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
-	camera.CFrame = CFrame.lookAt(finalCamPos, aimTargetPos)
+	camera.CFrame = currentCamCFrame:Lerp(targetLookCFrame, math.clamp(dt * currentSnapSpeed, 0.2, 1.0))
 end
 
 --------------------------------------------------------------------------------
@@ -470,20 +370,13 @@ function unlockCamera()
 	isLocked = false
 	currentTarget = nil
 	lastTargetPosition = nil
-	smoothedTargetCFrame = nil
-	currentCameraOffset = SETTINGS.BASE_CAMERA_OFFSET
 
 	RunService:UnbindFromRenderStep("UniversalLockOverride")
-	setPhysicsEnabled(false)
 
 	if hudContainer then 
 		hudContainer:Destroy() 
 		hudContainer = nil
 	end
-
-	camera.CameraType = Enum.CameraType.Custom
-	camera.FieldOfView = 70
-	UserInputService.MouseBehavior = Enum.MouseBehavior.Default
 
 	updateUIButton(false)
 end
@@ -497,16 +390,13 @@ local function toggleLock()
 			local character = player.Character
 			if not character then return end
 
-			setupBodyGyro(character)
-			setPhysicsEnabled(true)
-
 			isLocked = true
 			currentTarget = target
 			createHUD(target)
 
 			updateUIButton(true)
 
-			RunService:BindToRenderStep("UniversalLockOverride", Enum.RenderPriority.Camera.Value + 10, updateCamera)
+			RunService:BindToRenderStep("UniversalLockOverride", Enum.RenderPriority.Camera.Value + 10, updateDistanceScaledAim)
 		end
 	end
 end
@@ -516,12 +406,7 @@ end
 --------------------------------------------------------------------------------
 player.CharacterAdded:Connect(function(char)
 	unlockCamera()
-	setupBodyGyro(char)
 end)
-
-if player.Character then
-	setupBodyGyro(player.Character)
-end
 
 lockButton.Activated:Connect(toggleLock)
 
