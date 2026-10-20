@@ -8,7 +8,7 @@ local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
 --------------------------------------------------------------------------------
--- CONFIGURATION & SETTINGS STATE (DISTANCE-SCALED SNAPPY AIM)
+-- CONFIGURATION & SETTINGS STATE (RELIABLE MM2 MEDIUM PREDICTION)
 --------------------------------------------------------------------------------
 local SETTINGS = {
 	TOGGLE_KEY = Enum.KeyCode.F,
@@ -27,7 +27,8 @@ local SETTINGS = {
 	CLOSE_DISTANCE = 15,
 	FAR_DISTANCE = 120,
 	
-	PREDICTION_SCALE = 0.015,
+	-- Medium prediction scale tuned so target projection stays strictly within torso bounds
+	PREDICTION_SCALE = 0.055,
 }
 
 --------------------------------------------------------------------------------
@@ -224,7 +225,7 @@ local function getTargetPart(model)
 end
 
 --------------------------------------------------------------------------------
--- TOGGLEABLE VELOCITY PREDICTION & PRECISE MATH
+-- MEDIUM CLAMPED VELOCITY PREDICTION (RELIABLE FOR MM2)
 --------------------------------------------------------------------------------
 local function calculateDynamicTargetPosition(targetPart, dt)
 	if not targetPart then return nil end
@@ -241,7 +242,13 @@ local function calculateDynamicTargetPosition(targetPart, dt)
 
 	local predictedPos = currentPos
 	if isPredictionActive then
-		predictedPos = currentPos + (velocityEstimate * SETTINGS.PREDICTION_SCALE)
+		-- Clamped velocity vector to ensure the prediction stays strictly inside body boundaries
+		local clampedVel = Vector3.new(
+			math.clamp(velocityEstimate.X, -16, 16),
+			math.clamp(velocityEstimate.Y, -8, 8),
+			math.clamp(velocityEstimate.Z, -16, 16)
+		)
+		predictedPos = currentPos + (clampedVel * SETTINGS.PREDICTION_SCALE)
 	end
 
 	return predictedPos
@@ -351,7 +358,6 @@ local function updateDistanceScaledAim(dt)
 
 	local aimTargetPos = calculateDynamicTargetPosition(currentTarget, dt)
 
-	-- Dynamically scale snap speed based on distance (snappy when close, smooth when far)
 	local distance = (currentTarget.Position - playerRoot.Position).Magnitude
 	local alpha = math.clamp((distance - SETTINGS.CLOSE_DISTANCE) / (SETTINGS.FAR_DISTANCE - SETTINGS.CLOSE_DISTANCE), 0, 1)
 	local currentSnapSpeed = SETTINGS.MAX_SNAP_SPEED + (SETTINGS.MIN_SNAP_SPEED - SETTINGS.MAX_SNAP_SPEED) * alpha
