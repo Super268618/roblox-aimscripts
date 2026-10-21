@@ -8,7 +8,7 @@ local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
 --------------------------------------------------------------------------------
--- CONFIGURATION & SETTINGS STATE (RELIABLE MM2 MEDIUM PREDICTION)
+-- CONFIGURATION & SETTINGS STATE (APEX-TIER INSTANT-SNAP & PREDICTION MODES)
 --------------------------------------------------------------------------------
 local SETTINGS = {
 	TOGGLE_KEY = Enum.KeyCode.F,
@@ -16,19 +16,23 @@ local SETTINGS = {
 	SWITCH_RIGHT_KEY = Enum.KeyCode.E,
 	
 	BASE_MAX_RADIUS = 250,
-	SNIPER_MAX_RADIUS = 350,
+	GUN_MAX_RADIUS = 400,
 	
 	WEIGHT_SCREEN_CENTER = 0.5,
 	WEIGHT_WORLD_DISTANCE = 0.5,
 	
-	-- Distance-scaled snap response rates
-	MIN_SNAP_SPEED = 15,
-	MAX_SNAP_SPEED = 60,
-	CLOSE_DISTANCE = 15,
+	-- When Prediction is OFF: Super Ultra Ultra Ultra Apex Tier Instant Snap (Zero-lag override snap)
+	INSTANT_SNAP_SPEED = 9999,
+	
+	-- When Prediction is ON: Distance-scaled smooth tracking with advanced 3D directional lead
+	MIN_SNAP_SPEED = 25,
+	MAX_SNAP_SPEED = 85,
+	CLOSE_DISTANCE = 10,
 	FAR_DISTANCE = 120,
 	
-	-- Medium prediction scale tuned so target projection stays strictly within torso bounds
-	PREDICTION_SCALE = 0.055,
+	LATERAL_PREDICTION_MULT = 1.35,
+	VERTICAL_JUMP_COMPENSATION = 0.45,
+	MAX_PREDICTION_CAP = 4.5,
 }
 
 --------------------------------------------------------------------------------
@@ -105,7 +109,7 @@ menuCorner.Parent = settingsMenu
 local menuTitle = Instance.new("TextLabel")
 menuTitle.Size = UDim2.new(1, 0, 0, 35)
 menuTitle.BackgroundTransparency = 1
-menuTitle.Text = "LOCK SETTINGS"
+menuTitle.Text = "MM2 LOCK SETTINGS"
 menuTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
 menuTitle.Font = Enum.Font.SourceSansBold
 menuTitle.TextSize = 15
@@ -167,14 +171,14 @@ local function updateUIButton(active)
 end
 
 --------------------------------------------------------------------------------
--- HIGH-PERFORMANCE CACHED WORKSPACE MODEL SCANNER
+-- HIGH-PERFORMANCE CACHED MODEL SCANNER
 --------------------------------------------------------------------------------
 local cachedModels = {}
 local lastCacheUpdate = 0
 
 RunService.Heartbeat:Connect(function()
 	local now = tick()
-	if now - lastCacheUpdate > 0.4 then
+	if now - lastCacheUpdate > 0.35 then
 		lastCacheUpdate = now
 		table.clear(cachedModels)
 		for _, obj in ipairs(workspace:GetChildren()) do
@@ -192,7 +196,7 @@ RunService.Heartbeat:Connect(function()
 end)
 
 --------------------------------------------------------------------------------
--- UNIVERSAL RANGE SCALING
+-- MM2 RANGE SCALING
 --------------------------------------------------------------------------------
 local function getMaxRadius()
 	local char = player.Character
@@ -201,8 +205,8 @@ local function getMaxRadius()
 	for _, item in ipairs(char:GetChildren()) do
 		if item:IsA("Tool") then
 			local name = item.Name:lower()
-			if name:find("gun") or name:find("revolver") or name:find("sheriff") then
-				return SETTINGS.SNIPER_MAX_RADIUS
+			if name:find("gun") or name:find("revolver") or name:find("sheriff") or name:find("knife") then
+				return SETTINGS.GUN_MAX_RADIUS
 			end
 		end
 	end
@@ -225,7 +229,7 @@ local function getTargetPart(model)
 end
 
 --------------------------------------------------------------------------------
--- MEDIUM CLAMPED VELOCITY PREDICTION (RELIABLE FOR MM2)
+-- ADVANCED 3D STRAFE & JUMP PREDICTION MATH
 --------------------------------------------------------------------------------
 local function calculateDynamicTargetPosition(targetPart, dt)
 	if not targetPart then return nil end
@@ -234,7 +238,7 @@ local function calculateDynamicTargetPosition(targetPart, dt)
 
 	if lastTargetPosition then
 		local rawVel = (currentPos - lastTargetPosition) / math.max(dt, 0.001)
-		velocityEstimate = velocityEstimate:Lerp(rawVel, 0.25)
+		velocityEstimate = velocityEstimate:Lerp(rawVel, 0.4)
 	else
 		velocityEstimate = Vector3.zero
 	end
@@ -242,13 +246,15 @@ local function calculateDynamicTargetPosition(targetPart, dt)
 
 	local predictedPos = currentPos
 	if isPredictionActive then
-		-- Clamped velocity vector to ensure the prediction stays strictly inside body boundaries
-		local clampedVel = Vector3.new(
-			math.clamp(velocityEstimate.X, -16, 16),
-			math.clamp(velocityEstimate.Y, -8, 8),
-			math.clamp(velocityEstimate.Z, -16, 16)
-		)
-		predictedPos = currentPos + (clampedVel * SETTINGS.PREDICTION_SCALE)
+		local lateralVel = Vector3.new(velocityEstimate.X, 0, velocityEstimate.Z)
+		local verticalVel = Vector3.new(0, velocityEstimate.Y, 0)
+
+		local leadOffset = (lateralVel * SETTINGS.LATERAL_PREDICTION_MULT) + (verticalVel * SETTINGS.VERTICAL_JUMP_COMPENSATION)
+		if leadOffset.Magnitude > SETTINGS.MAX_PREDICTION_CAP then
+			leadOffset = leadOffset.Unit * SETTINGS.MAX_PREDICTION_CAP
+		end
+
+		predictedPos = currentPos + leadOffset
 	end
 
 	return predictedPos
@@ -340,9 +346,9 @@ local function createHUD(targetPart)
 end
 
 --------------------------------------------------------------------------------
--- DISTANCE-SCALED SNAPPY AIM ENGINE (ROBLOX NATIVE CAMERA BINDING)
+-- APEX TIER HYPER-SNAPPY AIM ENGINE (ZERO-LAG INSTANT SNAP WHEN PREDICTION OFF)
 --------------------------------------------------------------------------------
-local function updateDistanceScaledAim(dt)
+local function updateAimEngine(dt)
 	local character = player.Character
 	if not isLocked or not currentTarget or not currentTarget.Parent or not character then
 		unlockCamera()
@@ -357,15 +363,20 @@ local function updateDistanceScaledAim(dt)
 	end
 
 	local aimTargetPos = calculateDynamicTargetPosition(currentTarget, dt)
-
-	local distance = (currentTarget.Position - playerRoot.Position).Magnitude
-	local alpha = math.clamp((distance - SETTINGS.CLOSE_DISTANCE) / (SETTINGS.FAR_DISTANCE - SETTINGS.CLOSE_DISTANCE), 0, 1)
-	local currentSnapSpeed = SETTINGS.MAX_SNAP_SPEED + (SETTINGS.MIN_SNAP_SPEED - SETTINGS.MAX_SNAP_SPEED) * alpha
-
 	local currentCamCFrame = camera.CFrame
 	local targetLookCFrame = CFrame.lookAt(currentCamCFrame.Position, aimTargetPos)
-	
-	camera.CFrame = currentCamCFrame:Lerp(targetLookCFrame, math.clamp(dt * currentSnapSpeed, 0.2, 1.0))
+
+	if not isPredictionActive then
+		-- Super Ultra Ultra Ultra Apex Tier Instant Snap (Bypasses lerp completely for instantaneous zero-lag lock)
+		camera.CFrame = targetLookCFrame
+	else
+		-- Distance-scaled smooth snappy tracking when prediction is ON
+		local distance = (currentTarget.Position - playerRoot.Position).Magnitude
+		local alpha = math.clamp((distance - SETTINGS.CLOSE_DISTANCE) / (SETTINGS.FAR_DISTANCE - SETTINGS.CLOSE_DISTANCE), 0, 1)
+		local currentSnapSpeed = SETTINGS.MAX_SNAP_SPEED + (SETTINGS.MIN_SNAP_SPEED - SETTINGS.MAX_SNAP_SPEED) * alpha
+
+		camera.CFrame = currentCamCFrame:Lerp(targetLookCFrame, math.clamp(dt * currentSnapSpeed, 0.3, 1.0))
+	end
 end
 
 --------------------------------------------------------------------------------
@@ -402,7 +413,7 @@ local function toggleLock()
 
 			updateUIButton(true)
 
-			RunService:BindToRenderStep("UniversalLockOverride", Enum.RenderPriority.Camera.Value + 10, updateDistanceScaledAim)
+			RunService:BindToRenderStep("UniversalLockOverride", Enum.RenderPriority.Camera.Value + 10, updateAimEngine)
 		end
 	end
 end
